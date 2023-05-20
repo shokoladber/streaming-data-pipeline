@@ -1,11 +1,8 @@
 package com.labs1904.spark
 
-import com.labs1904.spark
-import com.labs1904.spark.StreamingPipeline.username
 import org.apache.hadoop.hbase.{HBaseConfiguration, TableName}
-import org.apache.hadoop.hbase.client.{ConnectionFactory, Get, Put, Scan}
+import org.apache.hadoop.hbase.client.{ConnectionFactory, Get, Put, Result}
 import org.apache.hadoop.hbase.util.Bytes
-import org.apache.hadoop.io.file.tfile.TFile.Reader.Scanner
 import org.apache.log4j.Logger
 import org.apache.spark.sql.{Dataset, SparkSession}
 import org.apache.spark.sql.streaming.{OutputMode, Trigger}
@@ -18,7 +15,7 @@ case class RawReview(marketplace: String, customer_id: String, review_id: String
 case class EnrichedReview(marketplace: String, customer_id: String, review_id: String, product_id: String, product_parent: String,
                           product_title: String, product_category: String, star_rating: String, helpful_votes: String,
                           total_votes: String, vine: String, verified_purchase: String, review_headline: String, review_body: String,
-                          review_date: String, birthdate: String, email: String, name: String, sex: String, customerUsername: String)
+                          review_date: String, birthdate: String, email: String, name: String, sex: String, customer_username: String)
 
 /**
  * Spark Structured Streaming app
@@ -82,9 +79,9 @@ object StreamingPipeline {
         val connection = ConnectionFactory.createConnection(conf)
         val table = connection.getTable(TableName.valueOf("mallen:users"))
 
-        //map rawReview lines to mallen:users by review_id
-        //enrich rawReview, combining review_id w/ customer_id info
-        val iter = partition.map(review=>{
+        //map rawReview lines to mallen:users by customer_id
+        //enrich rawReview, combining review from kafka w/ customer info from hbase
+        val enrichedReviewsList: Iterator[EnrichedReview] = partition.map(review=> {
           val getReviews = new Get(Bytes.toBytes(review.customer_id)).addFamily(Bytes.toBytes("f1"))
           val resultReviews = table.get(getReviews)
 
@@ -104,37 +101,40 @@ object StreamingPipeline {
             .addColumn(Bytes.toBytes("f1"), Bytes.toBytes("customer_username"), Bytes.toBytes(customerUsername))
           table.put(put)
 
-          val scan = new Scan()
-          val scanner = table.getScanner(scan)
-          val enrichedReviews = scanner.forEach(scannedReview => {
-            EnrichedReview(Bytes.toString(scannedReview.getValue(Bytes.toBytes("f1"), Bytes.toBytes("marketplace"))),
-              Bytes.toString(scannedReview.getValue(Bytes.toBytes("f1"), Bytes.toBytes("customer_id"))),
-              Bytes.toString(scannedReview.getValue(Bytes.toBytes("f1"), Bytes.toBytes("review_id"))),
-              Bytes.toString(scannedReview.getValue(Bytes.toBytes("f1"), Bytes.toBytes("product_id"))),
-              Bytes.toString(scannedReview.getValue(Bytes.toBytes("f1"), Bytes.toBytes("product_parent"))),
-              Bytes.toString(scannedReview.getValue(Bytes.toBytes("f1"), Bytes.toBytes("product_title"))),
-              Bytes.toString(scannedReview.getValue(Bytes.toBytes("f1"), Bytes.toBytes("product_category"))),
-              Bytes.toString(scannedReview.getValue(Bytes.toBytes("f1"), Bytes.toBytes("star_rating"))),
-              Bytes.toString(scannedReview.getValue(Bytes.toBytes("f1"), Bytes.toBytes("helpful_votes"))),
-              Bytes.toString(scannedReview.getValue(Bytes.toBytes("f1"), Bytes.toBytes("total_votes"))),
-              Bytes.toString(scannedReview.getValue(Bytes.toBytes("f1"), Bytes.toBytes("vine"))),
-              Bytes.toString(scannedReview.getValue(Bytes.toBytes("f1"), Bytes.toBytes("verified_purchase"))),
-              Bytes.toString(scannedReview.getValue(Bytes.toBytes("f1"), Bytes.toBytes("review_headline"))),
-              Bytes.toString(scannedReview.getValue(Bytes.toBytes("f1"), Bytes.toBytes("review_body"))),
-              Bytes.toString(scannedReview.getValue(Bytes.toBytes("f1"), Bytes.toBytes("review_date"))),
-              Bytes.toString(scannedReview.getValue(Bytes.toBytes("f1"), Bytes.toBytes("birthdate"))),
-              Bytes.toString(scannedReview.getValue(Bytes.toBytes("f1"), Bytes.toBytes("email"))),
-              Bytes.toString(scannedReview.getValue(Bytes.toBytes("f1"), Bytes.toBytes("name"))),
-              Bytes.toString(scannedReview.getValue(Bytes.toBytes("f1"), Bytes.toBytes("sex"))),
-              Bytes.toString(scannedReview.getValue(Bytes.toBytes("f1"), Bytes.toBytes("customer_username")))
+          val resultEnrichedReviews: Result = table.get(getReviews)
+
+          val enrichedReview = {
+            EnrichedReview(Bytes.toString(resultEnrichedReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("marketplace"))),
+              Bytes.toString(resultEnrichedReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("customer_id"))),
+              Bytes.toString(resultEnrichedReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("review_id"))),
+              Bytes.toString(resultEnrichedReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("product_id"))),
+              Bytes.toString(resultEnrichedReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("product_parent"))),
+              Bytes.toString(resultEnrichedReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("product_title"))),
+              Bytes.toString(resultEnrichedReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("product_category"))),
+              Bytes.toString(resultEnrichedReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("star_rating"))),
+              Bytes.toString(resultEnrichedReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("helpful_votes"))),
+              Bytes.toString(resultEnrichedReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("total_votes"))),
+              Bytes.toString(resultEnrichedReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("vine"))),
+              Bytes.toString(resultEnrichedReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("verified_purchase"))),
+              Bytes.toString(resultEnrichedReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("review_headline"))),
+              Bytes.toString(resultEnrichedReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("review_body"))),
+              Bytes.toString(resultEnrichedReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("review_date"))),
+              Bytes.toString(resultEnrichedReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("birthdate"))),
+              Bytes.toString(resultEnrichedReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("email"))),
+              Bytes.toString(resultEnrichedReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("name"))),
+              Bytes.toString(resultEnrichedReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("sex"))),
+              Bytes.toString(resultEnrichedReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("customer_username")))
             )
-          })
-          enrichedReviews
-        }).toList.iterator
+          }
+          enrichedReview
+        })
+        enrichedReviewsList.toList
 
         connection.close()
-        iter
+
+        enrichedReviewsList.toList.iterator
       })
+
 
       // Write output to console
       val query = enrichedReviews.writeStream
