@@ -4,7 +4,7 @@ import org.apache.hadoop.hbase.{HBaseConfiguration, TableName}
 import org.apache.hadoop.hbase.client.{ConnectionFactory, Get}
 import org.apache.hadoop.hbase.util.Bytes
 import org.apache.log4j.Logger
-import org.apache.spark.sql.{SparkSession}
+import org.apache.spark.sql.{Dataset, SparkSession}
 import org.apache.spark.sql.streaming.{OutputMode, Trigger}
 
 case class RawReview(marketplace: String, customer_id: String, review_id: String, product_id: String, product_parent: String,
@@ -24,9 +24,8 @@ case class EnrichedReview(marketplace: String, customer_id: String, review_id: S
 object StreamingPipeline {
   lazy val logger: Logger = Logger.getLogger(this.getClass)
   val jobName = "StreamingPipeline"
-
-  val hdfsUrl = "hdfs://hbase01.hourswith.expert:8020/"
-  val bootstrapServers = "b-3-public.hwekafkacluster.6d7yau.c16.kafka.us-east-1.amazonaws.com:9196,b-2-public.hwekafkacluster.6d7yau.c16.kafka.us-east-1.amazonaws.com:9196,b-1-public.hwekafkacluster.6d7yau.c16.kafka.us-east-1.amazonaws.com:9196"
+  val hdfsUrl = "hdfs://hbase01.labs1904.com:2181/"
+  val bootstrapServers = "change me"
   val username = "1904labs"
   val password = "1904labs"
   val hdfsUsername = "mallen" // TODO: set this to your handle
@@ -40,6 +39,8 @@ object StreamingPipeline {
     try {
       //start spark session
       val spark = SparkSession.builder()
+        .config("spark.hadoop.dfs.client.use.datanode.hostname", "true")
+        .config("spark.hadoop.fs.defaultFS", hdfsUrl)
         .config("spark.sql.shuffle.partitions", "3")
         .appName(jobName)
         .master("local[*]")
@@ -73,7 +74,7 @@ object StreamingPipeline {
 
       //connect spark to hbase; get table "mallen:users"
       //map rawReview to mallen:users with spark map by partitions
-      val enrichedReviews = rawReviews.mapPartitions(partition=>{
+      val enrichedReviewsDS: Dataset[EnrichedReview] = rawReviews.mapPartitions(partition=>{
         val conf = HBaseConfiguration.create()
         conf.set("hbase.zookeeper.quorum", "hbase01.labs1904.com:2181")
         val connection = ConnectionFactory.createConnection(conf)
@@ -81,7 +82,7 @@ object StreamingPipeline {
 
         //map rawReview lines to mallen:users by customer_id
         //enrich rawReview, combining review from kafka w/ customer info from hbase
-        val enrichedReviews = partition.map(review => {
+        val enrichedReviewsIter: Iterator[EnrichedReview] = partition.map(review => {
           val getReviews = new Get(Bytes.toBytes(review.customer_id)).addFamily(Bytes.toBytes("f1"))
           val resultReviews = table.get(getReviews)
 
@@ -90,35 +91,36 @@ object StreamingPipeline {
           val email = Bytes.toString(resultReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("mail")))
           val name = Bytes.toString(resultReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("name")))
           val sex = Bytes.toString(resultReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("sex")))
-          val customerUsername = Bytes.toString(resultReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("customer_username")))
-
+          val customerUsername = Bytes.toString(resultReviews.getValue(Bytes.toBytes("f1"), Bytes.toBytes("username")))
 
           EnrichedReview(review.marketplace, review.customer_id, review.review_id, review.product_id, review.product_parent, review.product_title, review.product_category, review.star_rating, review.helpful_votes, review.total_votes, review.vine, review.verified_purchase, review.review_headline, review.review_body, review.review_date, birthdate, email, name, sex, customerUsername)
         })
-        val enrichedReviewsList = enrichedReviews.toList
+
+        val enrichedReviewsList = enrichedReviewsIter.toList
 
         connection.close()
 
         enrichedReviewsList.iterator
       })
 
-
       // Write output to console
-      val query = enrichedReviews.writeStream
-        .outputMode(OutputMode.Append())
-        .format("console")
-        .option("truncate", false)
-        .trigger(Trigger.ProcessingTime("5 seconds"))
-        .start()
-
-      // Write output to HDFS
-//      val query = result.writeStream
+//      val query = enrichedReviewsDS.writeStream
 //        .outputMode(OutputMode.Append())
-//        .format("json")
-//        .option("path", s"/user/${hdfsUsername}/reviews_json")
-//        .option("checkpointLocation", s"/user/${hdfsUsername}/reviews_checkpoint")
+//        .format("console")
+//        .option("truncate", false)
 //        .trigger(Trigger.ProcessingTime("5 seconds"))
 //        .start()
+
+      // Write output to HDFS
+      val query = enrichedReviewsDS.writeStream
+        .outputMode(OutputMode.Append())
+        .format("csv")
+        .option("delimiter", ",")
+        .option("path", s"/user/${hdfsUsername}/reviews_csv")
+        .option("checkpointLocation", s"/user/${hdfsUsername}/reviews_checkpoint")
+        .partitionBy("star_rating")
+        .trigger(Trigger.ProcessingTime("20 seconds"))
+        .start()
       query.awaitTermination()
     } catch {
       case e: Exception => logger.error(s"$jobName error in main", e)
