@@ -24,8 +24,8 @@ case class EnrichedReview(marketplace: String, customer_id: String, review_id: S
 object StreamingPipeline {
   lazy val logger: Logger = Logger.getLogger(this.getClass)
   val jobName = "StreamingPipeline"
-  val hdfsUrl = "hdfs://hbase01.labs1904.com:2181/"
-  val bootstrapServers = "change me"
+  val hdfsUrl = "hdfs://hbase01.labs1904.com:8020/"
+  val bootstrapServers = "b-3-public.hwekafkacluster.6d7yau.c16.kafka.us-east-1.amazonaws.com:9196,b-2-public.hwekafkacluster.6d7yau.c16.kafka.us-east-1.amazonaws.com:9196,b-1-public.hwekafkacluster.6d7yau.c16.kafka.us-east-1.amazonaws.com:9196"
   val username = "1904labs"
   val password = "1904labs"
   val hdfsUsername = "mallen" // TODO: set this to your handle
@@ -56,11 +56,11 @@ object StreamingPipeline {
         .option("subscribe", "reviews")
         .option("startingOffsets", "earliest")
         .option("maxOffsetsPerTrigger", "20")
-        .option("startingOffsets","earliest")
         .option("kafka.security.protocol", "SASL_SSL")
         .option("kafka.sasl.mechanism", "SCRAM-SHA-512")
         .option("kafka.ssl.truststore.location", trustStore)
         .option("kafka.sasl.jaas.config", getScramAuthString(username, password))
+        .option("failOnDataLoss", false)
         .load()
         .selectExpr("CAST(value AS STRING)").as[String]
 
@@ -116,8 +116,8 @@ object StreamingPipeline {
         .outputMode(OutputMode.Append())
         .format("csv")
         .option("delimiter", ",")
-        .option("path", s"/user/${hdfsUsername}/reviews_csv")
-        .option("checkpointLocation", s"/user/${hdfsUsername}/reviews_checkpoint")
+        .option("path", s"/user/$hdfsUsername/reviews_csv")
+        .option("checkpointLocation", s"/user/$hdfsUsername/reviews_checkpoint")
         .partitionBy("star_rating")
         .trigger(Trigger.ProcessingTime("20 seconds"))
         .start()
@@ -127,7 +127,7 @@ object StreamingPipeline {
     }
   }
 
-  def getScramAuthString(username: String, password: String) = {
+  def getScramAuthString(username: String, password: String): String = {
     s"""org.apache.kafka.common.security.scram.ScramLoginModule required
    username=\"$username\"
    password=\"$password\";"""
